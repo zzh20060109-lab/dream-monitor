@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: dream-monitor
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
+    envVars:
+      - key: TZ
+        value: Asia/Shanghai
+      - key: DM_HOST
+        value: 0.0.0.0
