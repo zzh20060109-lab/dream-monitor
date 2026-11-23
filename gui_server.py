@@ -157,6 +157,7 @@ class Hub:
         self.enriching = False
         self.mine_at = 0.0
         self._mine_cache: list[dict] = []
+        self._form_cache: dict[str, tuple[str, float]] = {}   # aid -> (data, 抓取时刻)
 
         cfg = copy.deepcopy(base_cfg)
         api = dict(cfg.get("api") or {})
@@ -366,19 +367,39 @@ class Hub:
         self.log(msg)
         return {"ok": True, "msg": msg}
 
-    def signup(self, aid: str) -> dict:
+    def signup_data(self, aid: str, ttl: float = 30.0) -> str:
+        """报名表单 data（可预取缓存）。
+
+        表单模板是静态字段表，不含时间敏感内容，所以可以提前拉好、开火时直接提交，
+        省掉一次 HTTP 往返（原本每个请求还要吃 1.2 s 节流，等于白等 2.4 s）。
+        """
+        key = str(aid)
+        c = self._form_cache.get(key)
+        now = time.time()
+        if c and now - c[1] < ttl:
+            return c[0]
+        info = self.mon.client.signup_form(key)
+        data = _build_signup_data(info, self.name or "")
+        self._form_cache[key] = (data, now)
+        return data
+
+    def signup(self, aid: str, data: str | None = None, fast: bool = False,
+               quiet: bool = False) -> dict:
         aid = str(aid or "").strip()
         if not aid:
             raise ValueError("缺少活动 ID")
         c = self.mon.client
-        info = c.signup_form(aid)
-        data = _build_signup_data(info, self.name or "")
-        self.log(f"报名「{self._name_of(aid)}」表单 {len(data)} 字节：{data[:160]}")
+        if data is None:
+            data = self.signup_data(aid)
+        if not quiet:
+            self.log(f"报名「{self._name_of(aid)}」表单 {len(data)} 字节：{data[:160]}")
         try:
-            res = c.submit(aid, data=data)
-            self.log(f"报名返回：{str(res)[:220]}")
+            res = c.submit(aid, data=data, fast=fast)
+            if not quiet:
+                self.log(f"报名返回：{str(res)[:220]}")
         except ApiError as e:
-            self.log(f"报名失败：[{e.code}] {e.msg}")
+            if not quiet:
+                self.log(f"报名失败：[{e.code}] {e.msg}")
             if str(e.code) == "2000011":
                 return self._after_signup(aid, f"你已经报过「{self._name_of(aid)}」了")
             item = next((it for it in self.items if it["aid"] == aid), None)
