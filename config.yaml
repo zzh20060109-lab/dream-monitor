@@ -8,6 +8,9 @@ api:
   version: 4.9.5
   timeout: 20
   request_delay: 1.2
+  # 抢报名开火窗口用的快模式：几乎不节流、超时压到 3 秒；只作用于单次报名提交
+  request_delay_fast: 0.08
+  timeout_fast: 3
   auto_relogin: false
 poll_interval: 30
 page_size: 20
