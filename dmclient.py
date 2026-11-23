@@ -176,6 +176,11 @@ class DreamClient:
         self.jpush = cfg.get("jPushId", "")
         self.timeout = cfg.get("timeout", 20)
         self.delay = cfg.get("request_delay", 1.0)
+        # 抢报名用的「快模式」：间隔压到 0.08 s、超时压到 3 s，只给 submit 用。
+        # 平时请求仍走 self.delay，避免整站抓取过密触发风控。
+        self.delay_fast = float(cfg.get("request_delay_fast", 0.08) or 0.0)
+        self.timeout_fast = float(cfg.get("timeout_fast", 3.0) or 3.0)
+        self.burst = False   # True 时所有请求都走快模式（开火窗口内临时打开）
         self.ua = _ua_json(cfg)
         self.sess = requests.Session()
         # 不读系统代理：某些环境会残留 HTTP(S)_PROXY 指向已关闭的本地端口
@@ -190,15 +195,16 @@ class DreamClient:
         self.stats = {"ok": 0, "err": 0}
 
     # ---------------------------------------------------------- 底层
-    def _throttle(self):
-        gap = self.delay * random.uniform(0.85, 1.2)
+    def _throttle(self, fast: bool = False):
+        gap = (self.delay_fast if fast else self.delay) * random.uniform(0.85, 1.2)
         wait = self._last_call + gap - time.time()
         if wait > 0:
             time.sleep(wait)
         self._last_call = time.time()
 
     def _post(self, path: str, extra: dict | None = None, auth: bool = True,
-              ts: bool = True) -> Any:
+              ts: bool = True, fast: bool = False) -> Any:
+        fast = fast or self.burst
         params: dict[str, str] = {}
         if auth:
             params.update({
@@ -215,8 +221,9 @@ class DreamClient:
         params["signToken"] = C.sign_token(params)
 
         d = C.make_d(params)
-        self._throttle()
-        resp = self.sess.post(self.host + path, data={"d": d}, timeout=self.timeout)
+        self._throttle(fast)
+        resp = self.sess.post(self.host + path, data={"d": d},
+                              timeout=(self.timeout_fast if fast else self.timeout))
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -435,12 +442,15 @@ class DreamClient:
         """报名前拉表单（字段模板）。和 signup_info 是同一个接口。"""
         return self.signup_info(activity_id)
 
-    def submit(self, activity_id: str, data: str = "[]", remark: str = "") -> Any:
+    def submit(self, activity_id: str, data: str = "[]", remark: str = "",
+               fast: bool = False) -> Any:
         """提交报名。data 是报名表单的 JSON 字符串（不是对象）。
 
         实测（App 5.0.0 内存抓的真参数）：
         activityId / data / jPushId / remark / useNumber / uid / token / version / timestamp
         —— 少 jPushId 或 useNumber 就是 -2000，jPushId 还必须与本机 standardUA 里的一致。
+
+        fast=True：抢报名开火窗口用，跳过 1.2 s 节流、超时 3 s，失败立刻重来。
         """
         return self._post(PATH_SIGNUP_SUBMIT, {
             "activityId": str(activity_id),
@@ -448,7 +458,7 @@ class DreamClient:
             "remark": remark,
             "useNumber": "0",
             "jPushId": self.jpush,
-        })
+        }, fast=fast)
 
     def cancel(self, signup_id: str) -> Any:
         """取消报名。要的是 signUpId（详情里的 signUpId 字段），不是 activityId。"""
